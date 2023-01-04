@@ -1,0 +1,19 @@
+# Eclipse
+.classpath
+.project
+.settings/
+
+# Intellij
+.idea/
+*.iws
+
+# Mac
+.DS_Store
+
+# Maven
+log/
+target/
+
+# App
+config-local.yaml
+spark-warehouse/
