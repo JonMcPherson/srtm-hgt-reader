@@ -5,7 +5,6 @@ import java.util.zip.ZipInputStream
 
 import scala.annotation.tailrec
 import scala.language.higherKinds
-import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
 import scala.util.control.NonFatal
 
@@ -43,51 +42,47 @@ object HeightFile {
   sealed trait BaseTileFactory[T, C[_]] extends Serializable {
 
     /**
-     * Create a non-empty tile
-     *
-     * @param tileCol The column of the tile to create
-     * @param tileRow The row of the tile to create
-     * @param heights A flattened array with a square length containing the decoded Short height values
-     * @return A non-empty tile of type T at the specified tile location
-     */
-    def createTile(tileCol: Int, tileRow: Int, heights: Array[Short]): T
-
-    /**
-     * Create an empty tile (when all heights values were 0 such as in the ocean)
-     *
-     * @param tileCol The column of the tile to create
-     * @param tileRow The row of the tile to create
-     * @return An empty tile of type T at the specified tile location
-     */
-    def createTileNoData(tileCol: Int, tileRow: Int): T
-
-    /**
      * @return the resolution of the HGT file/tile (SRTM1 or SRTM3)
      */
     def hgtFileResolution: Resolution
 
-    private[HeightFile] def decode(tileKey: TileKey, fileData: Array[Byte])(implicit ct: ClassTag[T]): C[T]
+    private[HeightFile] def decode(tileKey: TileKey, fileData: Array[Byte]): C[T]
 
   }
 
   type ID[T] = T
 
   /**
-   * The trait for constructing a tile of type T provided the TileKey and decoded flat array of heights for an entire HGT file.
+   * The trait for constructing a tile of type T provided the TileKey and decoded flat Array of heights for an entire HGT file.
    *
-   * @tparam T the tile type that will be constructed (ideally a simple case class)
+   * @tparam T the tile type that will be constructed (like a simple case class or even just `Array[Short]`)
    */
   trait TileFactory[T] extends BaseTileFactory[T, ID] {
 
-    override private[HeightFile] def decode(tileKey: TileKey, fileData: Array[Byte])(implicit ct: ClassTag[T]): T =
-      decodeTile(tileKey.col, tileKey.row, fileData, this)
+    /**
+     * Create a non-empty tile
+     *
+     * @param heights A flattened `Array[Short]` with square length containing the decoded height values
+     * @return A non-empty tile of type T at the specified tile location
+     */
+    def createTile(heights: Array[Short]): T
+
+    /**
+     * Create an empty tile (when all heights values were 0 such as in the ocean)
+     *
+     * @return An empty tile of type T
+     */
+    def createTileNoData(): T
+
+    override private[HeightFile] def decode(tileKey: TileKey, fileData: Array[Byte]): T =
+      decodeTile(fileData, this)
 
   }
 
   /**
    * The trait for constructing a sub-tile of type T provided the decoded flat array of heights for a sub-tile of an HGT file.
    *
-   * @tparam T the tile type that will be constructed (ideally a simple case class)
+   * @tparam T the tile type that will be constructed (like a simple case class)
    */
   trait SubTileFactory[T] extends BaseTileFactory[T, Array] {
 
@@ -102,68 +97,126 @@ object HeightFile {
     }
 
     /**
+     * This exists for interoperability with Java to avoid implicit ClassTag for new Array[T]
+     *
+     * @param size the size of the array to initialize
+     * @return a new array of type T with the specified size
+     */
+    def initSubTilesArray(size: Int): Array[T]
+
+    /**
      * @return the dimension of the sub-tile grid to subdivide the HGT tile dimension by
      *         (must be a factor of hgtFileResolution.tileDimension)
      */
     def subTileGridDimension: Int
 
-    override private[HeightFile] def decode(tileKey: TileKey, fileData: Array[Byte])(implicit ct: ClassTag[T]): Array[T] =
-      decodeSubTiles(tileKey.col, tileKey.row, fileData, this)
+    /**
+     * Create a non-empty sub-tile
+     *
+     * @param subTileCol The global column of the sub-tile calculated as: `(hgtTile.col * subTileGridDimension) + x`
+     * @param subTileRow The global row of the sub-tile calculated as: `(hgtTile.row * subTileGridDimension) + y`
+     * @param heights A flattened `Array[Short]` with square length containing the decoded height values
+     * @return A non-empty tile of type T at the specified tile location
+     */
+    def createSubTile(subTileCol: Int, subTileRow: Int, heights: Array[Short]): T
+
+    /**
+     * Create an empty sub-tile (when all heights values were 0 such as in the ocean)
+     *
+     * @param subTileCol The global column of the sub-tile calculated as: `(hgtTileCol * subTileGridDimension) + x`
+     * @param subTileRow The global row of the sub-tile calculated as: `(hgtTileRow * subTileGridDimension) + y`
+     * @return An empty tile of type T at the specified sub-tile location
+     */
+    def createSubTileNoData(subTileCol: Int, subTileRow: Int): T
+
+    override private[HeightFile] def decode(tileKey: TileKey, fileData: Array[Byte]): Array[T] =
+      decodeSubTiles(tileKey.column, tileKey.row, fileData, this)
 
   }
 
+
   /**
-   * A class representing the coordinates of a full HGT tile in both lng/lat and col/row formats.
+   * A simple case class representing the integer coordinates (longitude, latitude) of an HGT tile
    *
-   * Construct an instance of this class using the factory functions in the
-   * [[com.soulfiresoft.file.hgt.HeightFile.TileKey$ TileKey]] companion object
-   *
-   * @param lng the longitudinal (horizonal axis) integer coordinate of the HGT tile
-   * @param lat the latitudinal (vertical axis) integer coordinate of the HGT tile
-   * @param col the column of the HGT tile
-   * @param row the row of the HGT tile
+   * @param longitude the integer longitude (x-axis) coordinate of the HGT tile
+   * @param latitude the integer latitude (y-axis) coordinate of the HGT tile
    */
-  final class TileKey private(val lng: Int, val lat: Int, val col: Int, val row: Int) extends Serializable {
+  final case class TileCoords(longitude: Int, latitude: Int)
+
+  /**
+   * A simple case class representing the position (col, row) a tile (or sub-tile)
+   * relative to the north west corner
+   *
+   * @param column the tile column
+   * @param row the tile row
+   */
+  final case class TilePos(column: Int, row: Int)
+
+  /**
+   * A simple case class for a decoded sub-tile of of an enclosing HGT tile
+   *
+   * @note This uses a mutable Array for Java interoperability, but this breaks the immutability contract of the case class.
+   *       Be careful not to mutate the enclosed heights Array
+   * @param position the position of the sub-tile within the enclosing HGT tile
+   * relative to the north west corner where (0,0) represents (-180,89)
+   * @param heights the decoded height values in a flattened `Array[Short]` with square length
+   */
+  final case class SimpleSubTile(position: TilePos, heights: Array[Short])
+
+
+  case class SimpleTileFactory(hgtFileResolution: Resolution) extends HeightFile.TileFactory[Array[Short]] {
+    override def createTile(heights: Array[Short]): Array[Short] = heights
+    override val createTileNoData: Array[Short] = Array.empty[Short]
+  }
+
+  case class SimpleSubTileFactory(hgtFileResolution: Resolution, override val subTileGridDimension: Int)
+    extends HeightFile.SubTileFactory[SimpleSubTile] {
+
+    override def initSubTilesArray(size: Int): Array[SimpleSubTile] = new Array(size)
+    override def createSubTile(subTileCol: Int, subTileRow: Int, heights: Array[Short]): SimpleSubTile =
+      SimpleSubTile(TilePos(subTileCol, subTileRow), heights)
+    override def createSubTileNoData(subTileCol: Int, subTileRow: Int): SimpleSubTile =
+      SimpleSubTile(TilePos(subTileCol, subTileRow), Array.empty)
+  }
+
+  /**
+   * A class representing the coordinates of a full HGT tile in both longitude/latitude and column/row formats.
+   *
+   * Construct an instance of this class using the constructor providing a valid longitude/latitude,
+   * or form the factory functions in the [[com.soulfiresoft.file.hgt.HeightFile.TileKey$ TileKey]] companion object
+   *
+   * @param longitude the longitudinal (horizonal axis) integer coordinate of the HGT tile
+   * @param latitude the latitudinal (vertical axis) integer coordinate of the HGT tile
+   * @throws java.lang.IllegalArgumentException if not in range: -180 &lt;= longitude &lt; 180, or if not in range -90 &lt;= latitude &lt; 90
+   */
+  final case class TileKey(longitude: Int, latitude: Int) {
+
+    require(longitude >= -180 && longitude < 180, s"longitude not within [-180, 180); longitude=$longitude")
+    require(latitude >= -90 && latitude < 90, s"latitude not within [-90, 90); latitude=$latitude")
+
+    lazy val position: TilePos = TilePos(longitude + 180, 90 - (latitude + 1))
 
     /**
-     * @return a tuple of the (lng, lat) integer coordinates
+     * @return the column of the HGT tile (shorthand for `position.column`)
      */
-    def coordinates: (Int, Int) = (lng, lat)
+    def column: Int = position.column
 
     /**
-     * @return a tuple of the (col, row)
+     * @return the row of the HGT tile (shorthand for `position.row`)
      */
-    def spatialKey: (Int, Int) = (col, row)
+    def row: Int = position.row
 
-    /**
-     * Example: `N15W024`
-     *
-     * @see [[com.soulfiresoft.file.hgt.HeightFile.TileKey#parseCoordinates TileKey.parseCoordinates(coordinates)]]
-     * @return a string representing these coordinates in the HGT filename format
-     */
-    def coordinatesString: String = {
-      (if (lat < 0) "S" else "N") + "%02d".format(Math.abs(lat)) +
-        (if (lng < 0) "W" else "E") + "%03d".format(Math.abs(lng))
-    }
-
-    override def toString: String = coordinatesString
-
-    override def hashCode(): Int = lng * 31 + lat
-
-    override def equals(obj: Any): Boolean = obj match {
-      case other: TileKey => lng == other.lng && lat == other.lat
-      case _ => false
-    }
   }
 
   /**
    * The TileKey companion containing the following factory functions:
    * <ul>
    * <li>[[com.soulfiresoft.file.hgt.HeightFile.TileKey$#parseCoordinates parseCoordinates]]
-   * <li>[[com.soulfiresoft.file.hgt.HeightFile.TileKey$#fromCoordinates fromCoordinates]]
-   * <li>[[com.soulfiresoft.file.hgt.HeightFile.TileKey$#fromSpatialKey fromSpatialKey]]
+   * <li>[[com.soulfiresoft.file.hgt.HeightFile.TileKey$#fromPosition fromPosition]]
    */
   object TileKey {
+
+    def apply(coordinates: (Int, Int)): TileKey = TileKey(coordinates._1, coordinates._2)
 
     /**
      * Parse the HGT file coordinate string into a TileKey.<br>
@@ -174,7 +227,7 @@ object HeightFile {
      */
     def parseCoordinates(coordinates: String): Try[TileKey] = Try {
       require(coordinates.length >= 7, "coordinates must be 7 characters") // allow trailing text (ex: N19W156.hgt)
-      fromCoordinates(
+      TileKey(
         (coordinates(3), coordinates.substring(4, 7).toInt) match {
           case ('E', eastLongitude) => eastLongitude
           case ('W', westLongitude) if westLongitude > 0 => -westLongitude
@@ -190,124 +243,166 @@ object HeightFile {
       case NonFatal(e) => throw new IllegalArgumentException(s"Invalid HGT tile coordinates; coordinates=$coordinates", e)
     }
 
-    /**
-     * Construct a new TileKey from a tuple of the integer coordinates
-     *
-     * @param key a tuple of the tile (longitude, latitude) to represent as a TileKey
-     * @return the TileKey for the given tile longitude and latitude
-     * @throws IllegalArgumentException if not in range: -180 &lt;= longitude &lt;= 180, or if not in range -90 &lt;= latitude &lt;= 90
-     */
-    def fromCoordinates(key: (Int, Int)): TileKey = fromCoordinates(key._1, key._2)
 
     /**
-     * Construct a new TileKey from the integer coordinates
+     * Construct a new TileKey from a tile position (column, row)
+     * relative to the north west corner where (0,0) represents (-180,89)
      *
-     * @param lng the tile longitude
-     * @param lat the tile latitude
-     * @return the TileKey for the given tile longitude and latitude
-     * @throws IllegalArgumentException if not in range: -180 &lt;= longitude &lt;= 180, or if not in range -90 &lt;= latitude &lt;= 90
-     */
-    def fromCoordinates(lng: Int, lat: Int): TileKey = {
-      require(lng >= -180 && lng < 180, s"lng not within [-180, 180); lng=$lng")
-      require(lat >= -90 && lat < 90, s"lat not within [-90, 90); lat=$lat")
-      new TileKey(lng, lat, lng + 180, 90 - (lat + 1))
-    }
-
-    /**
-     * Construct a new TileKey from a tuple of the spatial column and row
-     *
-     * @param key a tuple of the tile (col, row) to represent as a TileKey
+     * @param position of the tile (col, row) to represent as a TileKey
      * @return the TileKey for the given tile column and row
-     * @throws IllegalArgumentException if not in range: 0 &lt;= col &lt;= 360, or if not in range 0 &lt;= row &lt;= 180
+     * @throws java.lang.IllegalArgumentException if not in range: 0 &lt;= col &lt;= 360, or if not in range 0 &lt;= row &lt;= 180
      */
-    def fromSpatialKey(key: (Int, Int)): TileKey = fromSpatialKey(key._1, key._2)
+    def fromPosition(position: TilePos): TileKey = fromPosition(position.column, position.row)
 
     /**
-     * Construct a new TileKey from the spatial column and row
+     * Construct a new TileKey from a tile position (column, row)
+     * * relative to the north west corner where (0,0) represents (-180,89)
      *
-     * @param col the tile column
+     * @param column the tile column
      * @param row the tile row
      * @return the TileKey for the given tile column and row
-     * @throws IllegalArgumentException if not in range: 0 &lt;= col &lt;= 360, or if not in range 0 &lt;= row &lt;= 180
+     * @throws java.lang.IllegalArgumentException if not in range: 0 &lt;= col &lt;= 360, or if not in range 0 &lt;= row &lt;= 180
      */
-    def fromSpatialKey(col: Int, row: Int): TileKey = {
-      require(col >= 0 && col < 360, s"col not within [0, 360); col=$col")
+    def fromPosition(column: Int, row: Int): TileKey = {
+      require(column >= 0 && column < 360, s"col not within [0, 360); column=$column")
       require(row >= 0 && row < 180, s"row not within [0, 180); row=$row")
-      new TileKey(col - 180, 90 - row - 1, col, row)
+      new TileKey(column - 180, 90 - row - 1)
     }
   }
-val fileName = "N15W024.hgt.zip"
-for {
-  tileKey <- TileKey.parseCoordinates(fileName) // returns Try[TileKey]
 
-  (longitude, latitude) = tileKey.coordinates
-  (col, row) = tileKey.spatialKey
-} yield {
-  println(s"$longitude° lon, $latitude° lat")
-  println(s"column $col, row $row")
-  assert(fileName startsWith tileKey.coordinatesString)
-  tileKey
-}
+
   /**
    * Decode an HGT file (or zipped HGT file) into a single 1°² tile
+   * as a flattened `Array[Short]` of the decoded height values with square length `resolution^2`.
    *
+   * @note This returns a mutable Array for Java interoperability,
+   *       but this breaks the immutability contract of the HeightFile case class.
+   *       Be careful not to mutate the returned heights Array.
+   * @param hgtFileName the name of the HGT file defining the tile coordinates (ex: N47W123.hgt)
+   * @param hgtFileData the bytes of the HGT file (or zipped HGT file) to decode
+   * @param resolution the resolution of the HGT file/tile (SRTM1 or SRTM3)
+   * @return a HeightTile containing the provided TileKey and the decoded tile heights
+   */
+  def decodeTile(hgtFileName: String, hgtFileData: Array[Byte], resolution: Resolution): Try[HeightFile[Array[Short]]] =
+    decodeHeightFile[Array[Short], ID](hgtFileName, hgtFileData, SimpleTileFactory(resolution))
+
+  /**
+   * Decode an HGT file (or zipped HGT file) into a single 1°² tile
+   * as a flattened `Array[Short]` of the decoded height values with square length `resolution^2`.
+   *
+   * @note This returns a mutable Array for Java interoperability,
+   *       but this breaks the immutability contract of the HeightFile case class.
+   *       Be careful not to mutate the returned heights Array.
    * @param hgtTileKey the TileKey of the HGT file defining the tile coordinates (ex: `TileKey.parseCoordinates("N47W123.hgt")`)
    * @param hgtFileData the bytes of the HGT file (or zipped HGT file) to decode
-   * @param tileFactory the SubTileFactory instance used to create the sub-tiles of type T in the defined dimension
-   * @tparam T the type of the sub-tiles to decode into
-   * @return a HeightTile containing the (tileCol, tileRow) and the decoded tile
+   * @param resolution the resolution of the HGT file/tile (SRTM1 or SRTM3)
+   * @return a HeightTile containing the provided TileKey and the decoded tile heights
    */
-  def decodeTile[T: ClassTag](hgtTileKey: TileKey, hgtFileData: Array[Byte], tileFactory: TileFactory[T]): Try[HeightFile[T]] =
+  def decodeTile(hgtTileKey: TileKey, hgtFileData: Array[Byte], resolution: Resolution): Try[HeightFile[Array[Short]]] =
+    decodeHeightFile[Array[Short], ID](hgtTileKey, hgtFileData, SimpleTileFactory(resolution))
+
+  /**
+   * Decode an HGT file (or zipped HGT file) into a single 1°² tile of type T
+   *
+   * @note This provides a mutable Array for Java interoperability,
+   *       but this breaks the immutability contract of the HeightFile case class.
+   *       Be careful not to mutate the provided heights Array.
+   * @param hgtTileKey the TileKey of the HGT file defining the tile coordinates (ex: `TileKey.parseCoordinates("N47W123.hgt")`)
+   * @param hgtFileData the bytes of the HGT file (or zipped HGT file) to decode
+   * @param tileFactory the TileFactory instance used to create the tiles of type T in the resolution it specifies
+   * @tparam T the type of the sub-tiles to decode into
+   * @return a HeightTile containing the provided TileKey and the decoded tile
+   */
+  def decodeTile[T](hgtTileKey: TileKey, hgtFileData: Array[Byte], tileFactory: TileFactory[T]): Try[HeightFile[T]] =
     decodeHeightFile[T, ID](hgtTileKey, hgtFileData, tileFactory)
 
   /**
-   * Decode an HGT file (or zipped HGT file) into a single 1°² tile
+   * Decode an HGT file (or zipped HGT file) into a single 1°² tile of type T
    *
+   * @note This provides a mutable Array for Java interoperability,
+   *       but this breaks the immutability contract of the HeightFile case class.
+   *       Be careful not to mutate the provided heights Array.
    * @param hgtFileName the name of the HGT file defining the tile coordinates (ex: N47W123.hgt)
    * @param hgtFileData the bytes of the HGT file (or zipped HGT file) to decode
-   * @param tileFactory the SubTileFactory instance used to create the sub-tiles of type T in the defined dimension
+   * @param tileFactory the TileFactory instance used to create the tiles of type T in the resolution it specifies
    * @tparam T the type of the sub-tiles to decode into
-   * @return a HeightTile containing the parsed (tileCol, tileRow) and the decoded tile
+   * @return a HeightTile containing the parsed TileKey and the decoded tile
    */
-  def decodeTile[T: ClassTag](hgtFileName: String, hgtFileData: Array[Byte], tileFactory: TileFactory[T]): Try[HeightFile[T]] =
+  def decodeTile[T](hgtFileName: String, hgtFileData: Array[Byte], tileFactory: TileFactory[T]): Try[HeightFile[T]] =
     decodeHeightFile[T, ID](hgtFileName, hgtFileData, tileFactory)
 
   /**
-   * Decode an HGT file (or zipped HGT file) from the 1°² tile into sub tiles
+   * Decode an HGT file (or zipped HGT file) from the 1°² tile into a flattened array of sub tiles with squared length `subTileGridDimension²`.<br>
+   * Each sub-tile contains the tile position and decoded height values in a flattened `Array[Short]` with square length.
    *
+   * @note This returns mutable Arrays for Java interoperability,
+   *       but this breaks the immutability contract of the HeightFile and SimpleSubTile case classes.
+   *       Be careful not to mutate the enclosed sub-tiles and heights Arrays.
    * @param hgtTileKey the TileKey of the HGT file defining the tile coordinates (ex: `TileKey.parseCoordinates("N47W123.hgt")`)
    * @param hgtFileData the bytes of the HGT file (or zipped HGT file) to decode
-   * @param subTileFactory the SubTileFactory instance used to create the sub-tiles of type T in the defined dimension
-   * @tparam T the type of the sub-tiles to decode into
-   * @return a HeightTile containing the parsed (tileCol, tileRow) and a square Array of the decoded sub-tiles
+   * @param resolution the resolution of the HGT file/tile (SRTM1 or SRTM3)
+   * @return a HeightTile containing the provided TileKey and a square Array of the decoded sub-tiles
    */
-  def decodeSubTiles[T: ClassTag](hgtTileKey: TileKey, hgtFileData: Array[Byte], subTileFactory: SubTileFactory[T]): Try[HeightFile[Array[T]]] =
+  def decodeSubTiles(hgtTileKey: TileKey, hgtFileData: Array[Byte], resolution: Resolution, subTileGridDimension: Int): Try[HeightFile[Array[SimpleSubTile]]] =
+    decodeHeightFile(hgtTileKey, hgtFileData, SimpleSubTileFactory(resolution, subTileGridDimension))
+
+  /**
+   * Decode an HGT file (or zipped HGT file) from the 1°² tile into a flattened array of sub tiles with squared length `subTileGridDimension²`.<br>
+   * * Each sub-tile contains the tile position and decoded height values in a flattened `Array[Short]` with square length.
+   *
+   * @note This returns mutable Arrays for Java interoperability,
+   *       but this breaks the immutability contract of the HeightFile and SimpleSubTile case classes.
+   *       Be careful not to mutate the enclosed sub-tiles and heights Arrays.
+   * @param hgtFileName the name of the HGT file defining the tile coordinates (ex: N47W123.hgt)
+   * @param hgtFileData the bytes of the HGT file (or zipped HGT file) to decode
+   * @param resolution the resolution of the HGT file/tile (SRTM1 or SRTM3)
+   * @return a HeightTile containing the provided TileKey and a square Array of the decoded sub-tiles
+   */
+  def decodeSubTiles(hgtFileName: String, hgtFileData: Array[Byte], resolution: Resolution, subTileGridDimension: Int): Try[HeightFile[Array[SimpleSubTile]]] =
+    decodeHeightFile(hgtFileName, hgtFileData, SimpleSubTileFactory(resolution, subTileGridDimension))
+
+  /**
+   * Decode an HGT file (or zipped HGT file) from the 1°² tile into a flattened array of sub tiles with squared length `subTileGridDimension²`.
+   *
+   * @note This returns mutable Arrays for Java interoperability,
+   *       but this breaks the immutability contract of the HeightFile case class.
+   *       Be careful not to mutate the returned sub-tiles Array and provided heights Array.
+   * @param hgtTileKey the TileKey of the HGT file defining the tile coordinates (ex: `TileKey.parseCoordinates("N47W123.hgt")`)
+   * @param hgtFileData the bytes of the HGT file (or zipped HGT file) to decode
+   * @param subTileFactory the SubTileFactory instance used to create the sub-tiles of type T in the dimension and resolution it specifies
+   * @tparam T the type of the sub-tiles to decode into
+   * @return a HeightTile containing the provided TileKey and a square Array of the decoded sub-tiles
+   */
+  def decodeSubTiles[T](hgtTileKey: TileKey, hgtFileData: Array[Byte], subTileFactory: SubTileFactory[T]): Try[HeightFile[Array[T]]] =
     decodeHeightFile(hgtTileKey, hgtFileData, subTileFactory)
 
   /**
-   * Decode an HGT file (or zipped HGT file) from the 1°² tile into sub tiles
+   * Decode an HGT file (or zipped HGT file) from the 1°² tile into a flattened array of sub tiles with squared length `subTileGridDimension²`.
    *
+   * @note This returns mutable Arrays for Java interoperability,
+   *       but this breaks the immutability contract of the HeightFile case class.
+   *       Be careful not to mutate the returned sub-tiles Array and provided heights Array.
    * @param hgtFileName the name of the HGT file defining the tile coordinates (ex: N47W123.hgt)
    * @param hgtFileData the bytes of the HGT file (or zipped HGT file) to decode
-   * @param subTileFactory the SubTileFactory instance used to create the sub-tiles of type T in the defined dimension
+   * @param subTileFactory the SubTileFactory instance used to create the sub-tiles of type T in the dimension and resolution it specifies
    * @tparam T the type of the sub-tiles to decode into
-   * @return a HeightTile containing the parsed (tileCol, tileRow) and a square Array of the decoded sub-tiles
+   * @return a HeightTile containing the parsed TileKey and a square Array of the decoded sub-tiles
    */
-  def decodeSubTiles[T: ClassTag](hgtFileName: String, hgtFileData: Array[Byte], subTileFactory: SubTileFactory[T]): Try[HeightFile[Array[T]]] =
+  def decodeSubTiles[T](hgtFileName: String, hgtFileData: Array[Byte], subTileFactory: SubTileFactory[T]): Try[HeightFile[Array[T]]] =
     decodeHeightFile(hgtFileName, hgtFileData, subTileFactory)
 
 
-  private def decodeHeightFile[T: ClassTag, C[_]](hgtTileKey: TileKey, hgtFileData: Array[Byte], tileFactory: BaseTileFactory[T, C]): Try[HeightFile[C[T]]] =
+  private def decodeHeightFile[T, C[_]](hgtTileKey: TileKey, hgtFileData: Array[Byte], tileFactory: BaseTileFactory[T, C]): Try[HeightFile[C[T]]] =
     decodeHeightFile(s"tileKey=$hgtTileKey", Success(hgtTileKey), hgtFileData, tileFactory)
 
-  private def decodeHeightFile[T: ClassTag, C[_]](hgtFileName: String, hgtFileData: Array[Byte], tileFactory: BaseTileFactory[T, C]): Try[HeightFile[C[T]]] =
+  private def decodeHeightFile[T, C[_]](hgtFileName: String, hgtFileData: Array[Byte], tileFactory: BaseTileFactory[T, C]): Try[HeightFile[C[T]]] =
     decodeHeightFile(s"name=$hgtFileName", TileKey.parseCoordinates(hgtFileName), hgtFileData, tileFactory)
 
-  private def decodeHeightFile[T: ClassTag, C[_]](
+  private def decodeHeightFile[T, C[_]](
     hgtFileIdentifier: => String,
     hgtTileKey: Try[TileKey],
     hgtFileData: Array[Byte],
-    tileFactory: BaseTileFactory[T, C],
+    tileFactory: BaseTileFactory[T, C]
   ): Try[HeightFile[C[T]]] = {
 
     val hgtFileSize = hgtFileData.length
@@ -333,7 +428,7 @@ for {
     else throw new IllegalArgumentException(s"Invalid HGT file; $hgtFileIdentifier, size=$hgtFileSize")
   }
 
-  private def decodeTile[T: ClassTag](tileCol: Int, tileRow: Int, hgtFileData: Array[Byte], tileFactory: TileFactory[T]): T = {
+  private def decodeTile[T](hgtFileData: Array[Byte], tileFactory: TileFactory[T]): T = {
     val hgtTileResolution = tileFactory.hgtFileResolution
     val tileDimension = hgtTileResolution.tileDimension
     // 2 bytes per height value
@@ -347,9 +442,7 @@ for {
 
       var x = 0
       while (x < tileDimension) {
-        val hi = hgtFileData(i)
-        val lo = hgtFileData(i + 1)
-        val height = (((hi & 0xFF) << 8) | (lo & 0xFF)).toShort
+        val height = decodeShort(hgtFileData, i)
 
         tileHeights(j) = height
         if (empty && height != 0) empty = false
@@ -362,14 +455,14 @@ for {
     }
 
     if (empty) {
-      tileFactory.createTileNoData(tileCol, tileRow)
+      tileFactory.createTileNoData()
     } else {
-      tileFactory.createTile(tileCol, tileRow, tileHeights)
+      tileFactory.createTile(tileHeights)
     }
   }
 
   // Uses imperative while loops for the significant performance benefits
-  private def decodeSubTiles[T: ClassTag](tileCol: Int, tileRow: Int, hgtFileData: Array[Byte], subTileFactory: SubTileFactory[T]): Array[T] = {
+  private def decodeSubTiles[T](tileCol: Int, tileRow: Int, hgtFileData: Array[Byte], subTileFactory: SubTileFactory[T]): Array[T] = {
     val hgtTileResolution = subTileFactory.hgtFileResolution
     val subTileDimension = subTileFactory.subTileDimension
 
@@ -382,7 +475,7 @@ for {
     var subTileHeights: Array[Short] = null
 
     val subTileGridDimension = subTileFactory.subTileGridDimension
-    val subTiles = new Array[T](subTileGridDimension * subTileGridDimension)
+    val subTiles = subTileFactory.initSubTilesArray(subTileGridDimension * subTileGridDimension)
 
     var y, j = 0
     while (y < subTileGridDimension) {
@@ -399,9 +492,7 @@ for {
 
           var x2 = 0
           while (x2 < subTileDimension) {
-            val hi = hgtFileData(i2)
-            val lo = hgtFileData(i2 + 1)
-            val height = (((hi & 0xFF) << 8) | (lo & 0xFF)).toShort
+            val height = decodeShort(hgtFileData, i2)
 
             subTileHeights(j2) = height
             if (empty && height != 0) empty = false
@@ -417,10 +508,10 @@ for {
         val subTileRow = (tileRow * subTileGridDimension) + y
 
         if (empty) {
-          subTiles(j) = subTileFactory.createTileNoData(subTileCol, subTileRow)
+          subTiles(j) = subTileFactory.createSubTileNoData(subTileCol, subTileRow)
           // reuse subTileHeights array
         } else {
-          subTiles(j) = subTileFactory.createTile(subTileCol, subTileRow, subTileHeights)
+          subTiles(j) = subTileFactory.createSubTile(subTileCol, subTileRow, subTileHeights)
           subTileHeights = null // reset with null to avoid unnecessary alloc when finished
         }
 
@@ -433,6 +524,9 @@ for {
 
     subTiles
   }
+
+  private def decodeShort(hgtFileData: Array[Byte], index: Int): Short =
+    (((hgtFileData(index) & 0xFF) << 8) | (hgtFileData(index + 1) & 0xFF)).toShort
 
   private def unzipHGTFile(zipFileData: Array[Byte], expectedFileSize: Int): Try[(String, Array[Byte])] = Try {
     val zipFile = new ZipInputStream(new ByteArrayInputStream(zipFileData))

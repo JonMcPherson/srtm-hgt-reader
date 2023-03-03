@@ -35,7 +35,7 @@ class HeightFileTest extends FlatSpec with Matchers with OptionValues with TryVa
     val HeightFile(tileKey, subTiles) = decodeSubTiles()
 
     val dim = TestSubTileGridDimension
-    val subTileCol = tileKey.col * dim
+    val subTileCol = tileKey.column * dim
     val subTileRow = tileKey.row * dim
 
     subTiles should not be empty
@@ -46,7 +46,7 @@ class HeightFileTest extends FlatSpec with Matchers with OptionValues with TryVa
     subTiles.last.key shouldBe(subTileCol + dim - 1, subTileRow + dim - 1) // bottom right 797R2X2X+
   }
 
-  it should "decode flat sea level sub tiles into empty heights array" in {
+  it should "decode flat sea level sub tiles into empty heights sequence" in {
     val subTileKey = (62540, 29899) // https://plus.codes/797R7922+
 
     val subTile = decodeSubTiles().tileData.find(_.key == subTileKey)
@@ -59,7 +59,7 @@ class HeightFileTest extends FlatSpec with Matchers with OptionValues with TryVa
 
     val subTile = decodeSubTiles().tileData.find(_.key == subTileKey)
 
-    subTile.value.heights shouldBe Array[Short](
+    subTile.value.heights shouldBe Seq[Short](
       0, 1, 1, 0, 0, 0, 0, 0, 0,
       1, 1, 1, 0, 0, 0, 0, 0, 0,
       1, 1, 2, 0, 0, 0, 0, 0, 0,
@@ -98,73 +98,76 @@ class HeightFileTest extends FlatSpec with Matchers with OptionValues with TryVa
     val subTiles = decodeSubTiles("N00E000", heightData).tileData
 
     subTiles should not be empty
-    subTiles.head.heights.slice(0, 2) shouldBe Array(20555, 772)
+    subTiles.head.heights.slice(0, 2) shouldBe Seq(20555, 772)
     subTiles.head.heights.slice(2, 81) should contain only 0
     for (subTile <- subTiles.tail) subTile.heights shouldBe empty withClue s"in ${subTile.key}"
   }
 
   "decodeTile" should "read and decode HGT files" in {
-    val tile = decodeTile().tileData
+    val heightFile = decodeTile()
 
     val heightsLength = TestTileFactory.hgtFileResolution.tileDimension * TestTileFactory.hgtFileResolution.tileDimension
 
-    tile.heights should (have length heightsLength or have length 0) withClue s"in ${tile.key}"
+    heightFile.tileData.heights should (have length heightsLength or have length 0) withClue s"in ${heightFile.tileKey}"
   }
 
   it should "read and decode zipped HGT files" in {
-    val tile = decodeTile().tileData
-    val zippedTile = decodeTile(s"$TestHeightFileName.zip").tileData
+    val heightFile = decodeTile()
+    val zippedHeightFile = decodeTile(s"$TestHeightFileName.zip")
 
-    zippedTile.key shouldBe tile.key
-    zippedTile.heights shouldBe tile.heights withClue s"for subTile ${tile.key}"
+    zippedHeightFile.tileKey shouldBe heightFile.tileKey
+    zippedHeightFile.tileData shouldBe heightFile.tileData withClue s"for subTile ${heightFile.tileKey}"
   }
 
 
   private val TestTileKeyMappings = Map(
-    // Coordinates -> SpatialKey
-    (-24, 15) -> (156, 74),
-    (0, 0) -> (180, 89),
-    (-1, -1) -> (179, 90),
+    // Coordinates -> Position
+    (-24, 15) -> TilePos(156, 74),
+    (0, 0) -> TilePos(180, 89),
+    (-1, -1) -> TilePos(179, 90),
     // these SRTM tiles don't exist, but the TileKey is still valid
-    (-180, 89) -> (0, 0),
-    (179, -90) -> (359, 179)
+    (-180, 89) -> TilePos(0, 0),
+    (179, -90) -> TilePos(359, 179)
   )
 
-  "TileKey.fromCoordinates" should "construct a TileKey with equivalent SpatialKey" in {
-    for ((coordinates, spatialKey) <- TestTileKeyMappings)
-      TileKey.fromCoordinates(coordinates).spatialKey shouldBe spatialKey withClue s"from coordinates $coordinates"
+  "TileKey.apply" should "construct a TileKey with equivalent position" in {
+    for ((coordinates, position) <- TestTileKeyMappings)
+      TileKey(coordinates).position shouldBe position withClue s"from coordinates $coordinates"
   }
 
   it should "throw IllegalArgumentException for invalid tile coordinates" in {
-    an[IllegalArgumentException] should be thrownBy TileKey.fromCoordinates(-181, 0)
-    an[IllegalArgumentException] should be thrownBy TileKey.fromCoordinates(180, 0)
-    an[IllegalArgumentException] should be thrownBy TileKey.fromCoordinates(0, -91)
-    an[IllegalArgumentException] should be thrownBy TileKey.fromCoordinates(0, 90)
+    an[IllegalArgumentException] should be thrownBy TileKey(-181, 0)
+    an[IllegalArgumentException] should be thrownBy TileKey(180, 0)
+    an[IllegalArgumentException] should be thrownBy TileKey(0, -91)
+    an[IllegalArgumentException] should be thrownBy TileKey(0, 90)
   }
 
-  "TileKey.fromSpatialKey" should "construct a TileKey with equivalent coordinates" in {
-    for ((coordinates, spatialKey) <- TestTileKeyMappings)
-      TileKey.fromSpatialKey(spatialKey).coordinates shouldBe coordinates withClue s"from spatial key $spatialKey"
+  "TileKey.fromPosition" should "construct a TileKey with equivalent coordinates" in {
+    for (((longitude, latitude), position) <- TestTileKeyMappings) {
+      val tileKey = TileKey.fromPosition(position)
+      tileKey.longitude shouldBe longitude withClue s"from position $position"
+      tileKey.latitude shouldBe latitude withClue s"from position $position"
+    }
   }
 
-  it should "throw IllegalArgumentException for invalid spatial key" in {
-    an[IllegalArgumentException] should be thrownBy TileKey.fromSpatialKey(-1, 0)
-    an[IllegalArgumentException] should be thrownBy TileKey.fromSpatialKey(360, 0)
-    an[IllegalArgumentException] should be thrownBy TileKey.fromSpatialKey(0, -1)
-    an[IllegalArgumentException] should be thrownBy TileKey.fromSpatialKey(0, 180)
+  it should "throw IllegalArgumentException for invalid position" in {
+    an[IllegalArgumentException] should be thrownBy TileKey.fromPosition(-1, 0)
+    an[IllegalArgumentException] should be thrownBy TileKey.fromPosition(360, 0)
+    an[IllegalArgumentException] should be thrownBy TileKey.fromPosition(0, -1)
+    an[IllegalArgumentException] should be thrownBy TileKey.fromPosition(0, 180)
   }
 
   "TileKey.parseTileCoordinates" should "parse the latitude and longitude from tile coordinate strings" in {
-    TileKey.parseCoordinates("N15W024").success.value.coordinates shouldBe(-24, 15)
-    TileKey.parseCoordinates("N15W024.hgt").success.value.coordinates shouldBe(-24, 15)
+    TileKey.parseCoordinates("N15W024").success.value shouldBe TileKey(-24, 15)
+    TileKey.parseCoordinates("N15W024.hgt").success.value shouldBe TileKey(-24, 15)
 
-    TileKey.parseCoordinates("N00E000").success.value.coordinates shouldBe(0, 0)
-    TileKey.parseCoordinates("N00W001").success.value.coordinates shouldBe(-1, 0)
-    TileKey.parseCoordinates("S01E000").success.value.coordinates shouldBe(0, -1)
-    TileKey.parseCoordinates("S01W001").success.value.coordinates shouldBe(-1, -1)
+    TileKey.parseCoordinates("N00E000").success.value shouldBe TileKey(0, 0)
+    TileKey.parseCoordinates("N00W001").success.value shouldBe TileKey(-1, 0)
+    TileKey.parseCoordinates("S01E000").success.value shouldBe TileKey(0, -1)
+    TileKey.parseCoordinates("S01W001").success.value shouldBe TileKey(-1, -1)
 
-    TileKey.parseCoordinates("S90W180").success.value.coordinates shouldBe(-180, -90)
-    TileKey.parseCoordinates("N89E179").success.value.coordinates shouldBe(179, 89)
+    TileKey.parseCoordinates("S90W180").success.value shouldBe TileKey(-180, -90)
+    TileKey.parseCoordinates("N89E179").success.value shouldBe TileKey(179, 89)
   }
 
   it should "return Failure with IllegalArgumentException for invalid tile coordinates" in {
@@ -214,29 +217,29 @@ object HeightFileTest extends TryValues {
     decodeSubTiles(TestHeightFileName, loadHeightFile(loadFile))
 
 
-  case class Tile(key: (Int, Int), heights: Array[Short])
+  case class Tile(heights: Seq[Short])
 
-  case class SubTile(key: (Int, Int), heights: Array[Short])
+  case class SubTile(key: (Int, Int), heights: Seq[Short])
 
   private object TestTileFactory extends TileFactory[Tile] {
     override val hgtFileResolution: Resolution = Resolution.SRTM1
 
-    override def createTile(tileCol: Int, tileRow: Int, heights: Array[Short]): Tile =
-      Tile((tileCol, tileRow), heights)
+    override def createTile(heights: Array[Short]): Tile = Tile(heights)
 
-    override def createTileNoData(tileCol: Int, tileRow: Int): Tile =
-      createTile(tileCol, tileRow, Array.empty[Short])
+    override val createTileNoData: Tile = Tile(Seq.empty[Short])
   }
 
   private object TestSubTileFactory extends SubTileFactory[SubTile] {
     override val hgtFileResolution: Resolution = Resolution.SRTM1
     override val subTileGridDimension: Int = TestSubTileGridDimension
 
-    override def createTile(subTileCol: Int, subTileRow: Int, heights: Array[Short]): SubTile =
+    override def initSubTilesArray(size: Int): Array[SubTile] = new Array(size)
+
+    override def createSubTile(subTileCol: Int, subTileRow: Int, heights: Array[Short]): SubTile =
       SubTile((subTileCol, subTileRow), heights)
 
-    override def createTileNoData(subTileCol: Int, subTileRow: Int): SubTile =
-      createTile(subTileCol, subTileRow, Array.empty[Short])
+    override def createSubTileNoData(subTileCol: Int, subTileRow: Int): SubTile =
+      createSubTile(subTileCol, subTileRow, Array.empty[Short])
   }
 
 }
