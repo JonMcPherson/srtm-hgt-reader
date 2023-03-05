@@ -1,6 +1,6 @@
 name := "srtm-hgt-reader"
 organization := "com.soulfiresoft"
-version := "1.0.2"
+version := "1.0.0"
 scalaVersion := "2.13.10"
 
 crossScalaVersions := Seq("2.13.10", "2.12.17", "2.11.12")
