@@ -106,7 +106,7 @@ class HeightFileTest extends FlatSpec with Matchers with OptionValues with TryVa
   "decodeTile" should "read and decode HGT files" in {
     val heightFile = decodeTile()
 
-    val heightsLength = TestTileFactory.hgtFileResolution.tileDimension * TestTileFactory.hgtFileResolution.tileDimension
+    val heightsLength = TestTileFactory.resolution.tileDimension * TestTileFactory.resolution.tileDimension
 
     heightFile.tileData.heights should (have length heightsLength or have length 0) withClue s"in ${heightFile.tileKey}"
   }
@@ -221,25 +221,18 @@ object HeightFileTest extends TryValues {
 
   case class SubTile(key: (Int, Int), heights: Seq[Short])
 
-  private object TestTileFactory extends TileFactory[Tile] {
-    override val hgtFileResolution: Resolution = Resolution.SRTM1
-
+  private object TestTileFactory extends TileFactory[Tile](Resolution.SRTM1) {
     override def createTile(heights: Array[Short]): Tile = Tile(heights)
 
-    override val createTileNoData: Tile = Tile(Seq.empty[Short])
+    override val createTileNoData: Tile = Tile(Seq.empty)
   }
 
-  private object TestSubTileFactory extends SubTileFactory[SubTile] {
-    override val hgtFileResolution: Resolution = Resolution.SRTM1
-    override val subTileGridDimension: Int = TestSubTileGridDimension
-
-    override def initSubTilesArray(size: Int): Array[SubTile] = new Array(size)
-
+  private object TestSubTileFactory extends SubTileFactory[SubTile](Resolution.SRTM1, TestSubTileGridDimension) {
     override def createSubTile(subTileCol: Int, subTileRow: Int, heights: Array[Short]): SubTile =
       SubTile((subTileCol, subTileRow), heights)
 
     override def createSubTileNoData(subTileCol: Int, subTileRow: Int): SubTile =
-      createSubTile(subTileCol, subTileRow, Array.empty[Short])
+      SubTile((subTileCol, subTileRow), Seq.empty)
   }
 
 }
