@@ -1,6 +1,6 @@
-# SRTM Heightmap File Reader - Scala Implementation
+# SRTM HGT Heightmap File Reader
 
-This is a simple but robust `.hgt` file reader/decoder implemented in Scala and compatible with Java.
+This is a simple but robust `.hgt` file reader/decoder implemented in Scala, compatible with Java and JVM languages, and works well with [GeoTrellis](https://github.com/locationtech/geotrellis).
 
 HGT files are the global topology heightmap tiles that NASA released to the public from their Shuttle Radar Topology Mission (SRTM) in 2015. The dataset is available in 2 resolutions; 1 arc-second (~ 30 meters) and 3 arc-second (~90 meters) which are both supported by this decoder. The tiles are rasterized with signed 16-bit short integers representing the elevation in feet above or below sea level (`0` represents sea level). The 1 arc-second tiles (SRTM1) contain 1201² values, and the 3 arc-second tiles (SRTM3) contain 3601² values where the extra 1 value is extra padding as a buffer from the adjacent east and south tiles.
 
@@ -27,13 +27,13 @@ val fileName = "N15W024.hgt"
 val fileData = Files.readAllBytes(Paths.get(fileName))
 
 // SRTM1 for 1-arc-second data, SRTM3 for 3-arc-second data
-val resolution = HeightFile.Resolution.SRTM1
+val resolution = HeightFile.Resolution.SRTM3
 
 // Decode the file into a a single tile returning Try[HeightFile[Array[Short]]]
 HeightFile.decodeTile(fileName, fileData, resolution).map { tile =>
   // Do something with the decoded heights
   tile.copy(
-    tileData = bicubicInterpolation(tile.tileData, HeightFile.Resolution.SRTM3.tileDimension)
+    tileData = bicubicInterpolation(tile.tileData, HeightFile.Resolution.SRTM1.tileDimension)
   )
 }
 
@@ -58,13 +58,11 @@ val resolution = HeightFile.Resolution.SRTM1
 val tile = HeightFile.decodeTile(fileName, fileData, resolution)
 ```
 
-Alternatively, you can provide your own `TileFactory` implementation to create your own Tile model in cases where you want to inject more information or modify the decoded data such as converting to a 2D array. In this case, the resolution is defined by the TileFactory.
+Alternatively, you can provide your own `TileFactory` implementation to create your own Tile model in cases where you want to inject more information or modify the decoded data such as converting to a 2D array. In this case, the resolution is passed to the TileFactory.
 ```scala
 case class Tile(heights: Seq[Seq[Short]])
 
-object TileFactory extends HeightFile.TileFactory[Tile] {
-  override val hgtFileResolution: Resolution = Resolution.SRTM1
-
+object TileFactory extends HeightFile.TileFactory[Tile](Resolution.SRTM1) {
   override def createTile(heights: Array[Short]): Tile =
     Tile(heights.grouped(hgtFileResolution.tileDimension).toSeq)
 
@@ -100,16 +98,17 @@ val heightFile = TileKey.parseCoordinates(fileName).flatMap { tileKey =>
 
 ## How to decode an HGT file into many sub-tiles
 
-In this case, you will need to implement the `SubTileFactory` (or `JavaSubTileFactory`) trait to create your sub-tile such as a simple case class. 
+In this case, you will need to implement the `SubTileFactory` (or `JavaSubTileFactory`) trait to create your sub-tile like with a simple case class. 
 ```scala
 case class SubTile(col: Int, row: Int, heights: Seq[Seq[Short]])
 ```
 Your `SubTileFactory` will need to specify the file resolution (like in `TileFactory`), and additionally the sub-tile grid dimension which must be a factor of the file resolution to be evenly subdivided.  
-This example is subdividing the 1 arc-second tiles of 3600² values into 9² tiles containing 400² values.
+This example is subdividing the 1 arc-second tiles of 3600² values into 10² tiles containing 36² values.
 ```scala
-object SubTileFactory extends HeightFile.GenericSubTileFactory[SubTile] {
-  override val hgtFileResolution: Resolution = Resolution.SRTM1
-  override val subTileGridDimension: Int = 400 // == 20^3 == 3600 / 9
+val subTileGridDimension: Int = 100 // == 10^2 == 3600 / 36
+
+object SubTileFactory
+  extends HeightFile.SubTileFactory[SubTile](Resolution.SRTM1, subTileGridDimension) {
 
   override def createSubTile(subTileCol: Int, subTileRow: Int, heights: Array[Short]): SubTile =
     SubTile(subTileCol, subTileRow, heights.grouped(hgtFileResolution.subTileDimension).toSeq)
@@ -118,13 +117,7 @@ object SubTileFactory extends HeightFile.GenericSubTileFactory[SubTile] {
     createSubTile(subTileCol, subTileRow, Array.empty)
 }
 ```
-If you are using this library from Java, you will want to implement `SubTileFactory` instead of `GenericSubTileFactory` because the latter requires an implicit `ClassTag` to construct the array, wheras the former simply requires you to initialize the array yourself with:
-```java
-@Override
-public T[] initSubTilesArray(int size) {
-  return new T[size];
-}
-```
+Note: If you are using this library from Java, you will want to implement `JavaSubTileFactory` instead of `SubTileFactory` because the latter requires an implicit `ClassTag[T]` to construct the array, wheras the former requires the Java `Class<T>` type token.
 
 Just like with decoding into a single-tile, the raw `.hgt` (or `.hgt.zip`) file is read into memory in an `Array[Byte]` and then provided with the file name (or TileKey) and your SubTileFactory to the `HeightFile.decodeSubTiles` functions
 ```scala
@@ -147,11 +140,11 @@ val subTiles: Array[SubTile] =
   HeightFile.decodeSubTiles(fileName, hgtFileData, SubTileFactory)
 ```
 
-## Parallelising with Apache Spark
+## Parallelising with Apache Spark and GeoTrellis
 
 Distributed computing is a good choice for processing this large dataset, and Apache Spark with the GeoTrellis raster data Spark library is the perfect tool for the job.
 
-Here is a complete example paralellising the ingestion of the HGT files from an S3 bucket and then using the Geotrellis Spark library to create a `TileLayerRDD` to do complex operations on or transformations of this large raster data.
+Here is a complete example paralellising the ingestion of the HGT files from an S3 bucket and then using the GeoTrellis Spark library to create a `TileLayerRDD` to do complex operations on or transformations of this large raster data.
 
 ```scala
 val hgtDirectoryUri = "s3://some-bucket/path/to/hgt/files/"
