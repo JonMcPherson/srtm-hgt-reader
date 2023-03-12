@@ -2,6 +2,8 @@
 
 This is a simple but robust `.hgt` file reader/decoder implemented in Scala, compatible with Java and JVM languages, and works well with [GeoTrellis](https://github.com/locationtech/geotrellis).
 
+## What are SRTM HGT Files?
+
 HGT files are the global topology heightmap tiles that NASA released to the public from their Shuttle Radar Topology Mission (SRTM) in 2015. The dataset is available in 2 resolutions; 1 arc-second (~ 30 meters) and 3 arc-second (~90 meters) which are both supported by this decoder. The tiles are rasterized with signed 16-bit short integers representing the elevation in feet above or below sea level (`0` represents sea level). The 1 arc-second tiles (SRTM1) contain 1201² values, and the 3 arc-second tiles (SRTM3) contain 3601² values where the extra 1 value is extra padding as a buffer from the adjacent east and south tiles.
 
 You can find more details on the SRTM dataset and how to download it here:  
@@ -11,7 +13,7 @@ https://www2.jpl.nasa.gov/srtm/
 ## Quick Start
 
 
-The `HeightFile` companion object has static functions for decoding an HGT file into the raster tile of 16-bit signed short integers.
+The `HeightFile` companion object has static functions for decoding an HGT file into the raster tile of signed short 16-bit integers.
 * `HeightFile.decodeTile`
   - Decodes an entire HGT file into a single tile
 * `HeightFile.decodeSubTiles`
@@ -46,8 +48,9 @@ HeightFile.decodeSubTiles(fileName, fileData, resolution, 100)
 
 First you will read the raw `.hgt` (or `.hgt.zip`) file into memory in an `Array[Byte]`. and provide that with the file name to the `HeightFile.decodeTile` function. The file name must be the correct format from the original dataset that specifies the tile coordinates as `[NS]<##latitude>[EW]<###longitude>` like `N15W024.hgt` where the file extension is optional. Additionally, you need to specify the `HeightFile.Resolution` as either `SRTM1` for the 1-arc-second data, or `SRTM3` as the 3-arc-second data.
 
-The simplest decodeTile overload returns a `Try[HeightFile[Array[Short]]]` as a HeightFile with the decoded Short height values in a flattened Array with square length equal to squared resolution.
-Note that this library uses mutable `Array` instead of `Seq` for Java interoperability and performance reasons, so consider implicitly converting to `Seq` if using this from Scala.
+The simplest `decodeTile` overload returns a `Try[HeightFile[Array[Short]]]` as a HeightFile with the decoded Short height values in a flattened Array with square length equal to squared resolution.
+
+**Note:** This library uses mutable `Array` instead of `Seq` for Java interoperability and performance reasons, so consider implicitly converting/wrapping to `Seq` if using this from Scala.
 
 ```scala
 val fileName = "N15W024.hgt"
@@ -77,19 +80,20 @@ val tile = HeightFile.decodeTile(fileName, fileData, TileFactory)
 ```
 
 You can also use the overload providing a `TileKey` instance instead of a file name `String`. The `TileKey` represents the location of the HGT tile which is encoded by the file name. This is useful when you already parsed the file name using `TileKey.parseCoordinates(fileName)`.  
-The `TileKey` can also be constructed using these helpers:
-- `fromCoordinates(longitude: Int, latitude: Int)`
-- `fromSpatialKey(col: Int, row: Int)`
-  - Spatial Key is the grid coorinates ranging from `x[0, 360)`  and `y[0, 180)` rather than cartesian coordinates ranging from `lng[-180, 180)` and `lat[-90, 90)`
+The `TileKey` case class can be constructed using the constructor `apply(longitude: Int, latitude: Int): TileKey` or from these static factory functions:
+- `parseCoordinates(coordinates: String): Try[TileKey]`
+- `fromPosition(column: Int, row: Int): TileKey`
+  - The position is the grid coorinates ranging from `x[0, 360)`  and `y[0, 180)` rather than cartesian coordinates ranging from `lng[-180, 180)` and `lat[-90, 90)`
 
 ```scala
 val fileName = "N15W024.hgt.zip"
 // parseCoordinates returns Try[TileKey]
 val heightFile = TileKey.parseCoordinates(fileName).flatMap { tileKey =>
-  assert(tileKey == TileKey.fromCoordinates(24, 15))
-  assert(tileKey == TileKey.fromSpatialKey(204, 76)) // (lng + 180, 90 - (lat + 1))
-  assert(tileKey.coordinates == (tileKey.lng, tileKey.lat))
-  assert(tileKey.spatialKey == (tileKey.col, tileKey.row))
+  assert(tileKey == TileKey(24, 15))
+  assert(tileKey == TileKey.fromPosition(204, 76)) // (lng + 180, 90 - (lat + 1))
+  assert(tileKey == TileKey(tileKey.lng, tileKey.lat))
+  assert(tileKey.position == (tileKey.col, tileKey.row))
+
   assert(fileName startsWith tileKey.coordinatesString)
 
   HeightFile.decodeTile(tileKey, fileData, Resolution.SRTM1)
@@ -114,10 +118,10 @@ object SubTileFactory
     SubTile(subTileCol, subTileRow, heights.grouped(hgtFileResolution.subTileDimension).toSeq)
 
   override def createSubTileNoData(subTileCol: Int, subTileRow: Int): SubTile =
-    createSubTile(subTileCol, subTileRow, Array.empty)
+    SubTile(subTileCol, subTileRow, Array.empty)
 }
 ```
-Note: If you are using this library from Java, you will want to implement `JavaSubTileFactory` instead of `SubTileFactory` because the latter requires an implicit `ClassTag[T]` to construct the array, wheras the former requires the Java `Class<T>` type token.
+**Note:** If you are using this library from Java, you will want to implement `JavaSubTileFactory` instead of `SubTileFactory` because the latter requires an implicit `ClassTag[T]` to construct the array, wheras the former requires the Java `Class<T>` type token.
 
 Just like with decoding into a single-tile, the raw `.hgt` (or `.hgt.zip`) file is read into memory in an `Array[Byte]` and then provided with the file name (or TileKey) and your SubTileFactory to the `HeightFile.decodeSubTiles` functions
 ```scala
@@ -218,7 +222,7 @@ val (targetZoom, reprojectedHeightTiles) = heightTiles.reproject(
   tileLayerMetadata.crs,
   tileLayerMetadata.layout.copy(
     tileLayout = baseTileLayout.copy(
-      tileCols = baseTileLayout.tileCols * 2
+      tileCols = baseTileLayout.tileCols * 2,
       tileRows = baseTileLayout.tileCols * 2
     )
   ),

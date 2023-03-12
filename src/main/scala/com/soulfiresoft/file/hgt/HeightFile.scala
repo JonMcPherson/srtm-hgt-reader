@@ -99,7 +99,7 @@ object HeightFile {
    */
   abstract class SubTileFactory[T](
     override val resolution: Resolution,
-    val subTileGridDimension: Int,
+    val subTileGridDimension: Int
   )(implicit private[HeightFile] val classTag: ClassTag[T]) extends BaseTileFactory[T, Array] {
 
     /**
@@ -199,6 +199,11 @@ object HeightFile {
      * The tile position (column, row) relative to the north west corner where (0,0) represents (-180 lng, 89 lat)
      */
     lazy val position: TilePos = TilePos(longitude + 180, 90 - (latitude + 1))
+
+    // For convenience and symmetry :D
+    def lng: Int = longitude
+    def lat: Int = latitude
+    def col: Int = column
 
     /**
      * @return the column of the HGT tile (shorthand for `position.column`)
