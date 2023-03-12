@@ -122,12 +122,12 @@ class HeightFileTest extends FlatSpec with Matchers with OptionValues with TryVa
 
   private val TestTileKeyMappings = Map(
     // Coordinates -> Position
-    (-24, 15) -> TilePos(156, 74),
-    (0, 0) -> TilePos(180, 89),
-    (-1, -1) -> TilePos(179, 90),
+    (-24, 15) -> (156, 74),
+    (0, 0) -> (180, 89),
+    (-1, -1) -> (179, 90),
     // these SRTM tiles don't exist, but the TileKey is still valid
-    (-180, 89) -> TilePos(0, 0),
-    (179, -90) -> TilePos(359, 179)
+    (-180, 89) -> (0, 0),
+    (179, -90) -> (359, 179)
   )
 
   "TileKey.apply" should "construct a TileKey with equivalent position" in {

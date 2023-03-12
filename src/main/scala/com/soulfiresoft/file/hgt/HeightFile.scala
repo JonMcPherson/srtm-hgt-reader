@@ -36,6 +36,7 @@ object HeightFile {
       override def createTile(heights: Array[Short]): Array[Short] = heights
       @transient override val createTileNoData: Array[Short] = Array.empty
     }
+
   }
 
   object Resolution {
@@ -153,12 +154,12 @@ object HeightFile {
 
   /**
    * A simple case class representing the position (column, row) a tile (or sub-tile)
-   * relative to the north west corner
+   * relative to the north west corner where (0,0) represents (-180 lng, 89 lat)
    *
    * @param column the tile column
    * @param row the tile row
    */
-  final case class TilePos(column: Int, row: Int)
+  final case class SubTilePos(column: Int, row: Int)
 
   /**
    * A simple case class for a decoded sub-tile of of an enclosing HGT tile
@@ -168,15 +169,15 @@ object HeightFile {
    * @param position the global position of the sub-tile relative to the north west corner where (0,0) represents (-180 lng, 89 lat)
    * @param heights the decoded height values in a flattened `Array[Short]` with square length
    */
-  final case class SubTile(position: TilePos, heights: Array[Short])
+  final case class SubTile(position: SubTilePos, heights: Array[Short])
 
   private class SimpleSubTileFactory(resolution: Resolution, subTileGridDimension: Int)
     extends SubTileFactory[SubTile](resolution, subTileGridDimension) {
 
     override def createSubTile(subTileCol: Int, subTileRow: Int, heights: Array[Short]): SubTile =
-      SubTile(TilePos(subTileCol, subTileRow), heights)
+      SubTile(SubTilePos(subTileCol, subTileRow), heights)
     override def createSubTileNoData(subTileCol: Int, subTileRow: Int): SubTile =
-      SubTile(TilePos(subTileCol, subTileRow), Array.empty)
+      SubTile(SubTilePos(subTileCol, subTileRow), Array.empty)
   }
 
 
@@ -192,28 +193,30 @@ object HeightFile {
    */
   final case class TileKey(longitude: Int, latitude: Int) {
 
-    require(longitude >= -180 && longitude < 180, s"longitude not within [-180, 180); longitude=$longitude")
-    require(latitude >= -90 && latitude < 90, s"latitude not within [-90, 90); latitude=$latitude")
+    /**
+     * The column of the HGT tile (shorthand for `position.column`)
+     */
+    val column: Int = TileKey.longitudeToColumn(longitude)
+
+    /**
+     * The row of the HGT tile (shorthand for `position.row`)
+     */
+    val row: Int = TileKey.latitudeToRow(latitude)
 
     /**
      * The tile position (column, row) relative to the north west corner where (0,0) represents (-180 lng, 89 lat)
      */
-    lazy val position: TilePos = TilePos(longitude + 180, 90 - (latitude + 1))
+    def position: (Int, Int) = (column, row)
+
+    /**
+     * @return this TileKey as a tuple (longitude, latitude)
+     */
+    def coordinates: (Int, Int) = (longitude, latitude)
 
     // For convenience and symmetry :D
     def lng: Int = longitude
     def lat: Int = latitude
     def col: Int = column
-
-    /**
-     * @return the column of the HGT tile (shorthand for `position.column`)
-     */
-    def column: Int = position.column
-
-    /**
-     * @return the row of the HGT tile (shorthand for `position.row`)
-     */
-    def row: Int = position.row
 
   }
 
@@ -226,6 +229,54 @@ object HeightFile {
   object TileKey {
 
     def apply(coordinates: (Int, Int)): TileKey = TileKey(coordinates._1, coordinates._2)
+
+    /**
+     * Construct a new TileKey from a tile position (column, row)
+     * relative to the north west corner where (0,0) represents (-180 lng, 89 lat)
+     *
+     * @param position of the tile (column, row) to represent as a TileKey
+     * @return the TileKey for the given tile column and row
+     * @throws java.lang.IllegalArgumentException if not in range: 0 &lt;= column &lt;= 360, or if not in range 0 &lt;= row &lt;= 180
+     */
+    def fromPosition(position: (Int, Int)): TileKey = fromPosition(position._1, position._2)
+
+    /**
+     * Construct a new TileKey from a tile position (column, row)
+     * relative to the north west corner where (0,0) represents (-180 lng, 89 lat)
+     *
+     * @param column the tile column
+     * @param row the tile row
+     * @return the TileKey for the given tile column and row
+     * @throws java.lang.IllegalArgumentException if not in range: 0 &lt;= column &lt;= 360, or if not in range 0 &lt;= row &lt;= 180
+     */
+    def fromPosition(column: Int, row: Int): TileKey =
+      new TileKey(columnToLongitude(column), rowToLatitude(row))
+
+    def longitudeToColumn(longitude: Int): Int = {
+      require(longitude >= -180 && longitude < 180, s"longitude not within [-180, 180); longitude=$longitude")
+      longitude + 180
+    }
+
+    def latitudeToRow(latitude: Int): Int = {
+      require(latitude >= -90 && latitude < 90, s"latitude not within [-90, 90); latitude=$latitude")
+      90 - (latitude + 1)
+    }
+
+    def columnToLongitude(column: Int): Int = {
+      require(column >= 0 && column < 360, s"column not within [0, 360); column=$column")
+      column - 180
+    }
+
+    def rowToLatitude(row: Int): Int = {
+      require(row >= 0 && row < 180, s"row not within [0, 180); row=$row")
+      90 - row - 1
+    }
+
+    def coordinatesToPosition(coordinates: (Int, Int)): (Int, Int) =
+      (longitudeToColumn(coordinates._1), latitudeToRow(coordinates._2))
+
+    def positionToCoordinates(position: (Int, Int)): (Int, Int) =
+      (columnToLongitude(position._1), rowToLatitude(position._2))
 
     /**
      * Parse the HGT file coordinate string into a TileKey.<br>
@@ -252,41 +303,6 @@ object HeightFile {
       case NonFatal(e) => throw new IllegalArgumentException(s"Invalid HGT tile coordinates; coordinates=$coordinates", e)
     }
 
-
-    /**
-     * Construct a new TileKey from a tile position (column, row)
-     * relative to the north west corner where (0,0) represents (-180 lng, 89 lat)
-     *
-     * @param position of the tile (column, row) to represent as a TileKey
-     * @return the TileKey for the given tile column and row
-     * @throws java.lang.IllegalArgumentException if not in range: 0 &lt;= column &lt;= 360, or if not in range 0 &lt;= row &lt;= 180
-     */
-    def fromPosition(position: TilePos): TileKey = fromPosition(position.column, position.row)
-
-    /**
-     * Construct a new TileKey from a tile position (column, row)
-     * relative to the north west corner where (0,0) represents (-180 lng, 89 lat)
-     *
-     * @param position of the tile (column, row) to represent as a TileKey
-     * @return the TileKey for the given tile column and row
-     * @throws java.lang.IllegalArgumentException if not in range: 0 &lt;= column &lt;= 360, or if not in range 0 &lt;= row &lt;= 180
-     */
-    def fromPosition(position: (Int, Int)): TileKey = fromPosition(position._1, position._2)
-
-    /**
-     * Construct a new TileKey from a tile position (column, row)
-     * relative to the north west corner where (0,0) represents (-180 lng, 89 lat)
-     *
-     * @param column the tile column
-     * @param row the tile row
-     * @return the TileKey for the given tile column and row
-     * @throws java.lang.IllegalArgumentException if not in range: 0 &lt;= column &lt;= 360, or if not in range 0 &lt;= row &lt;= 180
-     */
-    def fromPosition(column: Int, row: Int): TileKey = {
-      require(column >= 0 && column < 360, s"column not within [0, 360); column=$column")
-      require(row >= 0 && row < 180, s"row not within [0, 180); row=$row")
-      new TileKey(column - 180, 90 - row - 1)
-    }
   }
 
 
