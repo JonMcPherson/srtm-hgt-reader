@@ -267,6 +267,16 @@ object HeightFile {
      * Construct a new TileKey from a tile position (column, row)
      * relative to the north west corner where (0,0) represents (-180 lng, 89 lat)
      *
+     * @param position of the tile (column, row) to represent as a TileKey
+     * @return the TileKey for the given tile column and row
+     * @throws java.lang.IllegalArgumentException if not in range: 0 &lt;= column &lt;= 360, or if not in range 0 &lt;= row &lt;= 180
+     */
+    def fromPosition(position: (Int, Int)): TileKey = fromPosition(position._1, position._2)
+
+    /**
+     * Construct a new TileKey from a tile position (column, row)
+     * relative to the north west corner where (0,0) represents (-180 lng, 89 lat)
+     *
      * @param column the tile column
      * @param row the tile row
      * @return the TileKey for the given tile column and row
